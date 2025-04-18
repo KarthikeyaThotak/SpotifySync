@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-gray-900 text-white">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Spotify Room - Audience</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://sdk.scdn.co/spotify-player.js"></script>
+</head>
+
+<body class="min-h-screen flex flex-col items-center justify-center px-4">
+    <div class="w-full max-w-md p-6 bg-gray-800 rounded-2xl shadow-lg space-y-6">
+        <div class="flex justify-between items-center">
+            <h1 class="text-2xl font-bold text-green-400" id="room-title">Room</h1>
+            <button onclick="window.location.href = 'http://127.0.0.1:8000'"
+                class="bg-green-500 hover:bg-green-600 text-white text-sm px-4 py-2 rounded-lg shadow-md transition">&larr;
+                Go Back</button>
+        </div>
+
+        <div class="text-center">
+            <h2 class="text-lg font-semibold text-white mb-2">🎧 Now Playing</h2>
+            <p id="now-playing" class="text-gray-300">Loading...</p>
+            <div class="flex justify-center mt-4">
+                <img id="album-art" class="rounded-xl w-48 h-48 object-cover" src="" alt="Album Art" />
+            </div>
+        </div>
+
+        <div class="text-center text-sm text-gray-500 mt-4">
+            <p>Stay synced with the host's Spotify playback</p>
+        </div>
+    </div>
+
+
+    <script>
+        //room-title
+        //now-playing
+        const roomId = new URLSearchParams(window.location.search).get("room_id");
+        document.getElementById("room-title").textContent = `Room: ${roomId}`;
+
+        
+
+
+        let player = null;
+
+        async function getSpotifyToken() {
+            try {
+                const response = await fetch("http://127.0.0.1:5000/spotify-token", {
+                    credentials: 'include'
+                });
+                if (!response.ok) throw new Error("Failed to get token");
+                const data = await response.json();
+                return data.access_token;
+            } catch (error) {
+                console.error("Failed to get Spotify token", error);
+            }
+        }
+
+        window.onSpotifyWebPlaybackSDKReady = async () => {
+            const token = await getSpotifyToken();
+            if (!token) {
+                console.error("No token received, cannot start player.");
+                return;
+            }
+
+            player = new Spotify.Player({
+                name: 'Web Playback SDK Player',
+                getOAuthToken: cb => cb(token),
+                volume: 0.5
+            });
+
+            // Error handling
+            player.addListener('initialization_error', ({ message }) => console.error(message));
+            player.addListener('authentication_error', ({ message }) => console.error(message));
+            player.addListener('account_error', ({ message }) => console.error(message));
+            player.addListener('playback_error', ({ message }) => console.error(message));
+
+            // Ready - Transfer playback
+            player.addListener('ready', ({ device_id }) => {
+                console.log('Ready with Device ID', device_id);
+                player._options.getOAuthToken(token => {
+                    fetch('https://api.spotify.com/v1/me/player', {
+                        method: 'PUT',
+                        headers: {
+                            'Authorization': `Bearer ${token}`,
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            device_ids: [device_id],
+                            play: false // Set to true to auto-play
+                        })
+                    }).then(res => {
+                        if (!res.ok) {
+                            console.error("Failed to transfer playback", res.statusText);
+                        } else {
+                            console.log("Playback transferred to Web Player");
+                        }
+                    });
+                });
+            });
+
+            // Connect player
+            player.connect().then(success => {
+                if (success) {
+                    console.log('The Web Playback SDK successfully connected to Spotify!');
+                }
+            });
+        };
+
+        async function syncWithHost() {
+            if (!player) {
+                console.warn("Spotify Player not ready yet.");
+                return;
+            }
+
+            try {
+                const res = await fetch(`http://127.0.0.1:5000/room/${roomId}/admin-now-playing`, {
+                    credentials: 'include'
+                });
+
+                if (!res.ok) throw new Error('Failed to fetch host playback');
+
+                const data = await res.json();
+                if (!data || !data.item) {
+                    console.warn("No song data from host.");
+                    document.getElementById("now-playing").textContent = "Nothing is currently playing.";
+                    document.getElementById("album-art").src = "";
+                    return;
+                }
+
+                const trackUri = data.item.uri;
+                const progressMs = data.progress_ms;
+                const isPaused = data.is_playing === false;
+
+                // Sync album art and track info
+                const track = data.item.name;
+                const artist = data.item.artists.map(a => a.name).join(', ');
+                const albumArtUrl = data.item.album.images[1]?.url || "";
+
+                document.getElementById("now-playing").textContent = `${track} by ${artist}`;
+                document.getElementById("album-art").src = albumArtUrl;
+
+                player.getCurrentState().then(state => {
+                    if (!state) {
+                        console.warn('No player state available yet.');
+                        return;
+                    }
+
+                    const currentTrack = state.track_window.current_track;
+                    const currentUri = currentTrack.uri;
+                    const localProgress = state.position;
+
+                    if (currentUri !== trackUri) {
+                        player._options.getOAuthToken(token => {
+                            fetch("https://api.spotify.com/v1/me/player/play", {
+                                method: "PUT",
+                                headers: {
+                                    'Authorization': `Bearer ${token}`,
+                                    'Content-Type': 'application/json'
+                                },
+                                body: JSON.stringify({
+                                    uris: [trackUri],
+                                    position_ms: progressMs
+                                })
+                            }).catch(err => console.error("Failed to start playback", err));
+                        });
+                    } else {
+                        const offset = Math.abs(localProgress - progressMs);
+                        if (offset > 3000) player.seek(progressMs);
+
+                        if (isPaused && !state.paused) {
+                            player.pause();
+                        } else if (!isPaused && state.paused) {
+                            player.resume();
+                        }
+                    }
+                });
+            } catch (err) {
+                console.error("Sync error:", err);
+            }
+        }
+
+
+
+        setTimeout(() => {
+            setInterval(syncWithHost, 5000);
+        }, 2000);
+
+        async function checkSession() {
+            const res = await fetch('http://127.0.0.1:5000/check-session', {
+                credentials: 'include'
+            });
+
+            if (res.status !== 200) {
+                window.location.href = "/index.html"; // Redirect to dashboard if session is not valid
+            }
+        }
+        checkSession()
+    </script>
+</body>
+
+</html>

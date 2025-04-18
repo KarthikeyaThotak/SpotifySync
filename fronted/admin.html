@@ -1,0 +1,79 @@
+<!-- admin.html -->
+<!DOCTYPE html>
+<html lang="en" class="bg-gray-900 text-white">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Spotify Room - Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center px-4">
+  <div class="w-full max-w-md p-6 bg-gray-800 rounded-2xl shadow-lg space-y-6">
+    <div class="flex justify-between items-center">
+      <h1 class="text-2xl font-bold text-green-400" id="room-info">Room</h1>
+      <button id="invite-btn" class="bg-green-500 hover:bg-green-600 text-white text-sm px-4 py-2 rounded-lg shadow-md transition">Invite</button>
+    </div>
+
+    <div class="text-center">
+      <h2 class="text-lg font-semibold text-white mb-2">🎧 Now Playing</h2>
+      <p id="now-playing" class="text-gray-300">Loading...</p>
+      <div class="flex justify-center mt-4">
+        <img id="album-art" class="rounded-xl w-48 h-48 object-cover" src="" alt="Album Art"/>
+      </div>
+    </div>
+
+    <div class="mt-4">
+      <h3 class="text-lg text-white">Admin</h3>
+      <ul id="admin-list" class="text-gray-300 list-disc pl-5"></ul>
+    </div>
+
+    <div class="text-center text-sm text-gray-500 mt-4">
+      <p>Stay synced with the host's Spotify playback</p>
+    </div>
+  </div>
+
+  <script>
+    const roomId = new URLSearchParams(window.location.search).get("room_id");
+    document.getElementById("room-info").textContent = "Room ID: " + roomId;
+
+    document.getElementById("invite-btn").addEventListener("click", () => {
+      const inviteUrl = `${window.location.origin}/audience.html?room_id=${roomId}`;
+      navigator.clipboard.writeText(inviteUrl).then(() => alert("Invite link copied!"));
+    });
+
+    async function fetchNowPlaying() {
+      const res = await fetch(`http://127.0.0.1:5000/room/${roomId}/admin-now-playing`, { credentials: 'include' });
+      if (res.status === 401) return document.getElementById("now-playing").innerText = "Unauthorized";
+
+      const data = await res.json();
+      if (data && data.item) {
+        const track = data.item.name;
+        const artist = data.item.artists.map(a => a.name).join(', ');
+        document.getElementById("now-playing").innerText = `${track} by ${artist}`;
+        document.getElementById("album-art").src = data.item.album.images[1].url;
+      } else {
+        document.getElementById("now-playing").innerText = "Nothing is currently playing.";
+      }
+    }
+
+    async function fetchAdmin() {
+      const res = await fetch(`http://127.0.0.1:5000/room/${roomId}`, { credentials: 'include' });
+      const data = await res.json();
+      const list = document.getElementById("admin-list");
+      list.innerHTML = "";
+      (data.members || []).forEach(member => {
+        const li = document.createElement("li");
+        li.textContent = member;
+        list.appendChild(li);
+      });
+    }
+
+    setInterval(() => {
+      fetchNowPlaying();
+      fetchAdmin();
+    }, 5000);
+    fetchNowPlaying();
+    fetchAdmin();
+  </script>
+</body>
+</html>

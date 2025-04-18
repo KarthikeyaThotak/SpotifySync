@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en" class="bg-gray-900 text-white">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Spotify Sync Room</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="min-h-screen flex flex-col items-center justify-center px-4">
+    <div class="w-full max-w-md p-6 bg-gray-800 rounded-2xl shadow-lg space-y-6">
+        <div class="flex justify-between items-center">
+            <h1 class="text-2xl font-bold text-green-400" id="room-info">Room</h1>
+            <button id="invite-btn"
+                class="bg-green-500 hover:bg-green-600 text-white text-sm px-4 py-2 rounded-lg shadow-md transition">Invite</button>
+        </div>
+
+        <div class="text-center">
+            <h2 class="text-lg font-semibold text-white mb-2">🎧 Now Playing</h2>
+            <p id="now-playing" class="text-gray-300">Loading...</p>
+            <!-- Centered Image -->
+            <div class="flex justify-center mt-4">
+                <img id="album-art" class="rounded-xl w-48 h-48 object-cover" src="" alt="Album Art" />
+            </div>
+        </div>
+
+        <!-- Audience List Section -->
+        <div class="mt-4">
+            <h3 class="text-lg text-white">Audience</h3>
+            <ul id="audience-list" class="text-gray-300 list-disc pl-5">
+                <!-- Audience members will be populated here -->
+            </ul>
+        </div>
+
+        <div class="text-center text-sm text-gray-500 mt-4">
+            <p>Stay synced with the host's Spotify playback</p>
+        </div>
+
+    </div>
+
+    <script>
+        // Check session for access token
+        async function checkSession() {
+            const res = await fetch('http://127.0.0.1:5000/check-session', {
+                credentials: 'include'
+            });
+
+            if (res.status !== 200) {
+                window.location.href = "/index.html"; // Redirect to dashboard if session is not valid
+            }
+        }
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomId = urlParams.get('room_id');
+        document.getElementById("room-info").textContent = "Room ID: " + roomId;
+
+        const inviteBtn = document.getElementById("invite-btn");
+        inviteBtn.addEventListener("click", () => {
+            const inviteUrl = `${window.location.origin}/room.html?room_id=${roomId}`;
+            navigator.clipboard.writeText(inviteUrl).then(() => {
+                alert("Invite link copied to clipboard!");
+            });
+        });
+
+        async function fetchNowPlaying() {
+            try {
+                const res = await fetch(`http://127.0.0.1:5000/room/${roomId}/admin-now-playing`, {
+                    credentials: 'include'
+                });
+
+                if (res.status === 401) {
+                    document.getElementById("now-playing").innerText = "Unauthorized to access playback data.";
+                    return;
+                }
+
+                const data = await res.json();
+                if (data && data.item) {
+                    const track = data.item.name;
+                    const artist = data.item.artists.map(artist => artist.name).join(', ');
+                    document.getElementById("now-playing").innerText = `${track} by ${artist}`;
+
+                    // Set album art
+                    const albumArtUrl = data.item.album.images[1].url; // Use medium size
+                    document.getElementById("album-art").src = albumArtUrl;
+
+                    syncPlayback(data.item.uri, data.progress_ms);
+                } else {
+                    document.getElementById("now-playing").innerText = "Nothing is currently playing.";
+                }
+            } catch (err) {
+                console.error("Error fetching playback data:", err);
+                document.getElementById("now-playing").innerText = "Failed to fetch playback data.";
+            }
+        }
+
+        // Load audience list
+        async function fetchAudience() {
+            const res = await fetch(`http://127.0.0.1:5000/room/${roomId}`, { credentials: 'include' });
+            const data = await res.json();
+            if (data && data.members) {
+                const list = document.getElementById("audience-list");
+                list.innerHTML = "";
+                data.members.forEach(member => {
+                    const li = document.createElement("li");
+                    li.textContent = member;
+                    list.appendChild(li);
+                });
+            }
+        }
+
+        function getSessionToken() {
+            const cookies = document.cookie.split(';');
+            for (let cookie of cookies) {
+                const [name, value] = cookie.trim().split('=');
+                if (name === 'session') {  // assuming the session token is stored with the key 'session_token'
+                    return value;
+                }
+            }
+            return null; // Return null if no session token is found
+        }
+
+
+        async function getAccessToken(){
+            const data = await fetch(`http://127.0.0.1:5000/spotify-token`, {credentials: 'include'});
+            const token = await data.json();
+            return token.access_token
+
+        }
+
+        // Web Playback Sync (Audience Side)
+        let player;
+        window.onSpotifyWebPlaybackSDKReady = () => {
+            const token = getAccessToken(); // Get session token
+            player = new Spotify.Player({
+                name: 'Sync Player',
+                getOAuthToken: cb => { cb(token); },
+                volume: 0.8
+            });
+
+            player.connect().then(success => {
+                if (success) {
+                    console.log('The Web Playback SDK successfully connected to Spotify!');
+                }
+            })
+        };
+
+        function syncPlayback(trackUri, progressMs) {
+            if (!player) return;
+
+            player.getCurrentState().then(state => {
+                if (!state || state.track_window.current_track.uri !== trackUri) {
+                    player._options.getOAuthToken(token => {
+                        fetch(`https://api.spotify.com/v1/me/player/play`, {
+                            method: 'PUT',
+                            body: JSON.stringify({
+                                uris: [trackUri],
+                                position_ms: progressMs
+                            }),
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'Authorization': `Bearer ${token}`
+                            }
+                        });
+                    });
+                }
+            });
+        }
+
+        // Run
+        setInterval(fetchNowPlaying, 5000);
+        fetchNowPlaying();
+
+        // Check session when page loads
+        checkSession();
+        getAccessToken()
+        fetchAudience();
+    </script>
+
+    <!-- Spotify Web Playback SDK -->
+    <script src="https://sdk.scdn.co/spotify-player.js"></script>
+</body>
+
+</html>
